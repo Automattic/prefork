@@ -1,14 +1,12 @@
 <?php
 
 class Prefork {
+	// Configuration
 	public $prefork_callback;
 	public $postfork_callback;
-
-	// Worker config
 	public $max_workers = 4;
 
-	// Process identifiers
-	private $service_pid;
+	// Child process identifiers
 	private $worker_pids = array();
 
 	public function __construct( $transport = 'ZMQ' ) {
@@ -74,10 +72,10 @@ class Prefork {
 		return true;
 	}
 
-	private function service__reap_dead_workers( $timeout = 0 ) {
+	private function service__reap_dead_workers() {
 		do {
 			// Non-blocking check for child exit status
-			$pid = pcntl_wait( $status, $timeout ? $timeout : WNOHANG );
+			$pid = pcntl_wait( $status, WNOHANG );
 			// Return of zero means no zombie children detected
 			if ( $pid === 0 )
 				return;
