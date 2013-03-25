@@ -346,13 +346,11 @@ class Prefork_Transport_ZMQ implements Prefork_Transport {
 		$this->frontend_socket->sendmulti( $response_envelope );
 	}
 
-	private function poll_inbox( $block = true ) {
-		$timeout = $block ? -1 : 0;
-		$this->inbox_poll->poll( $this->inbox_readable, $this->inbox_writeable, $timeout );
+	private function poll_inbox() {
+		$this->inbox_poll->poll( $this->inbox_readable, $this->inbox_writeable );
 	}
 
-	private function poll_workers( $block = true ) {
-		$timeout = $block ? -1 : 0;
-		$this->workers_poll->poll( $this->workers_readable, $this->workers_writeable, $timeout );
+	private function poll_workers() {
+		$this->workers_poll->poll( $this->workers_readable, $this->workers_writeable );
 	}
 }
