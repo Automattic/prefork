@@ -4,12 +4,15 @@ class Prefork {
 	// Configuration
 	public $prefork_callback;
 	public $postfork_callback;
-	public $max_workers = 4;
+	public $max_workers = 8;
 
 	// Child process identifiers
 	private $worker_pids = array();
+	private $workers_needing_restart = array();
 
-	public function __construct( $transport = 'ZMQ' ) {
+	private $continue = true;
+
+	public function __construct( $transport = 'Sockets' ) {
 		if ( version_compare( PHP_VERSION, '5.4', '<' ) )
 			die( 'Error: Prefork requires PHP 5.4 for http_response_code().' . PHP_EOL );
 
@@ -53,8 +56,30 @@ class Prefork {
 		if ( substr( php_sapi_name(), 0, 3 ) != 'cgi' )
 			die( 'Error: Prefork service used with unsupported SAPI. PHP was invoked with "' . php_sapi_name() . '" SAPI. The Prefork Service requires a "cgi" SAPI to capture headers. Try executing "php-cgi" at the command line.' . PHP_EOL );
 
-		$this->transport->become_service();
+		$this->transport->service__start();
 
+		// Install our signal handler
+		declare ( ticks = 1 ); // Catch signals quickly
+		pcntl_signal( SIGINT, array( $this, 'sig_handler' ) );
+
+		$this->service_loop();
+
+		// Restore default signal handler
+		pcntl_signal( SIGINT, SIG_DFL );
+	}
+
+	public function sig_handler( $signal ) {
+		if ( $signal == SIGINT ) {
+			print 'Service received SIGINT. Shutting down.' . PHP_EOL;
+			$this->service__shutdown();
+		}
+		if ( $signal == SIGHUP ) {
+			print 'Service recieved SIGHUP. Restarting workers.' . PHP_EOL;
+			$this->workers_needing_restart = $this->worker_pids;
+		}
+	}
+
+	private function service_loop() {
 		while ( $this->service__continue() ) {
 			$this->service__reap_dead_workers();
 			while ( $this->service__needs_more_workers() )
@@ -65,10 +90,13 @@ class Prefork {
 			$this->transport->service__shuttle_request_to_worker();
 		}
 		$this->service__shutdown();
-		exit;
 	}
 
 	private function service__continue() {
+		if ( ! $this->continue )
+			return false;
+		if ( ! $this->transport->service__continue() )
+			return false;
 		return true;
 	}
 
@@ -123,7 +151,9 @@ class Prefork {
 	}
 
 	public function service__shutdown() {
+		print "Service shutting down" . PHP_EOL;
 		$this->transport->service__shutdown();
+		exit;
 	}
 
 	public function fork() {
@@ -184,7 +214,11 @@ class Prefork {
 
 interface Prefork_Transport {
 	function agent__transact_with_service( $request ); // return $response;
-	function become_service();
+	function service__start();
+	function service__continue(); // return bool
+	function service__poll_for_responses();
+	function service__poll_for_responses_and_workers();
+	function service__poll_for_responses_and_requests();
 	function service__shuttle_responses_until_a_worker_is_ready();
 	function service__shuttle_responses_until_a_request_is_ready();
 	function service__shuttle_request_to_worker();
@@ -196,161 +230,193 @@ interface Prefork_Transport {
 	function intern__send_response_to_service( $response );
 }
 
-class Prefork_Transport_ZMQ implements Prefork_Transport {
-	// 0MQ connections
-	public $frontend_bind_interface = "ipc:///tmp/prefork-frontend";
-	public $frontend_connect_address = "ipc:///tmp/prefork-frontend";
-	public $backend_request_bind_interface = "ipc:///tmp/prefork-backend-request";
-	public $backend_request_connect_address = "ipc:///tmp/prefork-backend-request";
-	public $backend_response_bind_interface = "ipc:///tmp/prefork-backend-response";
-	public $backend_response_connect_address = "ipc:///tmp/prefork-backend-response";
-//	public $frontend_bind_interface = "tcp://lo:8082";
-//	public $frontend_connect_address = "tcp://localhost:8082";
-//	public $backend_bind_interface = "tcp://lo:8083";
-//	public $backend_connect_address = "tcp://localhost:8083";
+class Prefork_Transport_Sockets implements Prefork_Transport {
+	public $frontend_address = "/tmp/prefork-frontend";
+	public $frontend_backlog = 64;
+	public $backend_request_address = "/tmp/prefork-backend-request";
+	public $backend_request_backlog = 64;
+	public $backend_response_address = "/tmp/prefork-backend-response";
+	public $backend_response_backlog = 64;
 
-	// 0MQ resources
-	private $service_context;
+	// Sockets for listening
 	private $frontend_socket;
 	private $backend_request_socket;
 	private $backend_response_socket;
-	private $worker_request_context;
-	private $worker_request_socket;
-	private $inbox_poll;
-	private $inbox_readable = array();
-	private $inbox_writeable = array();
-	private $workers_poll;
-	private $workers_readable = array();
-	private $workers_writeable = array();
+
+	// Sockets for accepted connections
+	private $ready_worker_socket;
+	private $ready_request_socket;
+	private $ready_response_socket;
+
+	private $pending_request_sockets = array();
+
 	private $return_address;
 
 	public function __construct() {
-		if ( ! extension_loaded( 'zmq' ) )
-			die( 'Error: ' . __CLASS__ . ' requires the "zmq" extension for PHP.' . PHP_EOL );
 	}
 
 	/***** Interface methods *****/
 
 	public function agent__transact_with_service( $request ) {
-		$context = new ZMQContext( 1, false );
-		$socket = $context->getSocket( ZMQ::SOCKET_REQ );
-		$socket->setSockOpt( ZMQ::SOCKOPT_SNDHWM, 0 );
-		$socket->connect( $this->frontend_connect_address );
-		$this->zmq_send( $socket, $request );
-		$response = $this->zmq_recv( $socket );
+		$socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
+		socket_connect( $socket, $this->frontend_address );
+		$request_message = serialize( $request );
+		$this->write_to_socket( $socket, $request_message );
+		$response_message = $this->read_from_socket( $socket );
+		$response = unserialize( $response_message );
 		return $response;
 	}
 
-	public function become_service() {
-		// Bind the front and back ends
-		$this->service_context = new ZMQContext( 1, false );
-		$this->frontend_socket = $this->service_context->getSocket( ZMQ::SOCKET_ROUTER );
-		$this->frontend_socket->setSockOpt( ZMQ::SOCKOPT_RCVHWM, 0 );
-		$this->frontend_socket->bind( $this->frontend_bind_interface );
-		$this->backend_request_socket = $this->service_context->getSocket( ZMQ::SOCKET_PUSH );
-		$this->backend_request_socket->setSockOpt( ZMQ::SOCKOPT_SNDHWM, 0 );
-		$this->backend_request_socket->bind( $this->backend_request_bind_interface );
-		$this->backend_response_socket = $this->service_context->getSocket( ZMQ::SOCKET_PULL );
-		$this->backend_response_socket->bind( $this->backend_response_bind_interface );
+	public function service__start() {
+		// Prepare to accept connections from Agents
+		$this->frontend_socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
+		socket_set_option($this->frontend_socket, SOL_SOCKET, SO_REUSEADDR, 1);
+		if ( ! socket_bind( $this->frontend_socket, $this->frontend_address ) )
+			die( socket_strerror( socket_last_error() ) . PHP_EOL );
+		socket_listen( $this->frontend_socket, $this->frontend_backlog );
 
-		// Create a poll for incoming requests and responses
-		$this->inbox_poll = new ZMQPoll();
-		$this->inbox_poll->add( $this->frontend_socket, ZMQ::POLL_IN );
-		$this->inbox_poll->add( $this->backend_response_socket, ZMQ::POLL_IN );
+		// Prepare to accept connections from Workers ready for requests
+		$this->backend_request_socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
+		socket_set_option($this->backend_request_socket, SOL_SOCKET, SO_REUSEADDR, 1);
+		socket_bind( $this->backend_request_socket, $this->backend_request_address );
+		socket_listen( $this->backend_request_socket, $this->backend_request_backlog );
 
-		// Create a poll for workers awaiting requests and sending responses
-		$this->workers_poll = new ZMQPoll();
-		$this->workers_poll->add( $this->backend_request_socket, ZMQ::POLL_OUT );
-		$this->workers_poll->add( $this->backend_response_socket, ZMQ::POLL_IN );
+		// Prepare to accept connections from Workers ready with responses
+		$this->backend_response_socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
+		socket_set_option($this->backend_response_socket, SOL_SOCKET, SO_REUSEADDR, 1);
+		socket_bind( $this->backend_response_socket, $this->backend_response_address );
+		socket_listen( $this->backend_response_socket, $this->backend_response_backlog );
+	}
+
+	public function service__continue() {
+		return true;
+	}
+
+	public function service__poll_for_responses() {
+		$this->ready_response_socket = false;
+		$read = array( $this->backend_response_socket );
+		$write = $except = array();
+		socket_select( $read, $write, $except, null );
+		if ( in_array( $this->backend_response_socket, $read, true ) )
+			$this->ready_response_socket = socket_accept( $this->backend_response_socket );
+	}
+
+	public function service__poll_for_responses_and_workers() {
+		$this->ready_response_socket = false;
+		$this->ready_worker_socket = false;
+		$read = array( $this->backend_response_socket, $this->backend_request_socket );
+		$write = $except = array();
+		socket_select( $read, $write, $except, null );
+		if ( in_array( $this->backend_response_socket, $read, true ) )
+			$this->ready_response_socket = socket_accept( $this->backend_response_socket );
+		if ( in_array( $this->backend_request_socket, $read, true ) )
+			$this->ready_worker_socket = socket_accept( $this->backend_request_socket );
+	}
+
+	public function service__poll_for_responses_and_requests() {
+		$this->ready_response_socket = false;
+		$this->ready_request_socket = false;
+		$read = array( $this->backend_response_socket, $this->frontend_socket );
+		$write = $except = array();
+		socket_select( $read, $write, $except, null );
+		if ( in_array( $this->backend_response_socket, $read, true ) )
+			$this->ready_response_socket = socket_accept( $this->backend_response_socket );
+		if ( in_array( $this->frontend_socket, $read, true ) )
+			$this->ready_request_socket = socket_accept( $this->frontend_socket );
 	}
 
 	public function service__shuttle_responses_until_a_worker_is_ready() {
 		do {
-			$this->poll_workers();
-			if ( $this->workers_readable )
+			$this->service__poll_for_responses_and_workers();
+			if ( $this->ready_response_socket )
 				$this->shuttle_response();
-		} while ( ! $this->workers_writeable );
+		} while ( ! $this->ready_worker_socket );
 	}
 
 	public function service__shuttle_responses_until_a_request_is_ready() {
 		do {
-			$this->poll_inbox();
-			if ( in_array( $this->backend_response_socket, $this->inbox_readable, true ) )
+			$this->service__poll_for_responses_and_requests();
+			if ( $this->ready_response_socket )
 				$this->shuttle_response();
-		} while ( ! in_array( $this->frontend_socket, $this->inbox_readable, true ) );
+		} while ( ! $this->ready_request_socket );
 	}
 
 	public function service__shuttle_request_to_worker() {
-		$request_envelope = $this->frontend_socket->recvMulti();
-		$this->backend_request_socket->sendmulti( $request_envelope );
+		$return_address = (string) intval( $this->ready_request_socket );
+		$this->pending_request_sockets[ $return_address ] = $this->ready_request_socket;
+		$request = $this->read_from_socket( $this->ready_request_socket );
+		$this->write_to_socket( $this->ready_worker_socket, $return_address );
+		$this->write_to_socket( $this->ready_worker_socket, $request );
+		socket_close( $this->ready_worker_socket );
 	}
 
 	public function service__become_worker() {
-		$this->worker_context = new ZMQContext( 1, false );
-		$this->worker_request_socket = $this->worker_context->getSocket( ZMQ::SOCKET_PULL );
-		$this->worker_request_socket->setSockOpt( ZMQ::SOCKOPT_RCVHWM, 0 );
-		$this->worker_request_socket->connect( $this->backend_request_connect_address );
-		$this->worker_response_socket = $this->worker_context->getSocket( ZMQ::SOCKET_PUSH );
-		$this->worker_response_socket->setSockOpt( ZMQ::SOCKOPT_SNDHWM, 0 );
-		$this->worker_response_socket->connect( $this->backend_response_connect_address );
 	}
 
 	public function service__shutdown() {
-		// Unbind immediately to allow 
-		$this->frontend_socket->unbind( $this->frontend_bind_interface );
+		while ( $this->pending_request_sockets ) {
+			$this->service__poll_for_responses();
+			$this->shuttle_response();
+		}
+		socket_close( $this->frontend_socket );
+		socket_close( $this->backend_request_socket );
+		socket_close( $this->backend_response_socket );
+		unlink( $this->frontend_address );
+		unlink( $this->backend_request_address );
+		unlink( $this->backend_response_address );
 	}
 
 	public function worker__receive_request() {
-		$first_message_part = $this->worker_request_socket->recv();
-		// A single-part message is a signal
-		if ( ! $this->worker_request_socket->getSockOpt( ZMQ::SOCKOPT_RCVMORE ) )
-			return $first_message_part;
-		// Otherwise the first part is the return address
-		$this->return_address = $first_message_part;
-		$request = $this->zmq_recv( $this->worker_request_socket );
+		$socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
+		socket_connect( $socket, $this->backend_request_address );
+		$this->return_address = $this->read_from_socket( $socket );
+		$request_message = $this->read_from_socket( $socket );
+		socket_close( $socket );
+		$request = unserialize( $request_message );
 		return $request;
 	}
 
 	public function worker__send_response_to_service( $response ) {
-		// The ZMQ::SOCKET_ROUTER needs an address and delimiter
-		$this->worker_response_socket->send( $this->return_address, ZMQ::MODE_SNDMORE );
-		$this->worker_response_socket->send(                    '', ZMQ::MODE_SNDMORE );
-		$result = $this->zmq_send( $this->worker_response_socket, $response );
+		return intern__send_response_to_service( $response );
 	}
 
-	public function worker__become_intern() { }
+	public function worker__become_intern() {
+	}
 
 	public function intern__send_response_to_service( $response ) {
-		$context = new ZMQContext( 1, false );
-		$socket = $context->getSocket( ZMQ::SOCKET_PUSH );
-		$socket->connect( $this->backend_response_connect_address );
-		// The ZMQ::SOCKET_ROUTER needs an address and delimiter
-		$socket->send( $this->return_address, ZMQ::MODE_SNDMORE );
-		$socket->send(                    '', ZMQ::MODE_SNDMORE );
-		$this->zmq_send( $socket, $response );
+		$socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
+		socket_connect( $socket, $this->backend_response_address );
+		$this->write_to_socket( $socket, $this->return_address );
+		$response_message = serialize( $response );
+		$this->write_to_socket( $socket, $response_message );
+		socket_close( $socket );
 	}
 
 	/***** Internal methods *****/
 
-	private function zmq_send( $socket, $message ) {
-		return $socket->send( serialize( $message ) );
+	private function read_from_socket( $socket ) {
+		socket_set_block( $socket );
+		socket_recv( $socket, $header, 4, MSG_WAITALL );
+		$length = current( unpack( 'N', $header ) );
+		socket_recv( $socket, $message, $length, MSG_WAITALL );
+		return $message;
 	}
 
-	private function zmq_recv( $socket ) {
-		$message = $socket->recvMulti();
-		return unserialize( implode( '', $message ) );
+	private function write_to_socket( $socket, $message ) {
+		socket_set_nonblock( $socket );
+		$length = strlen( $message );
+		$header = pack( 'N', $length );
+		socket_send( $socket, $header, 4, 0 );
+		socket_send( $socket, $message, $length, 0 );
 	}
 
 	private function shuttle_response() {
-		$response_envelope = $this->backend_response_socket->recvMulti();
-		$this->frontend_socket->sendmulti( $response_envelope );
-	}
-
-	private function poll_inbox() {
-		$this->inbox_poll->poll( $this->inbox_readable, $this->inbox_writeable );
-	}
-
-	private function poll_workers() {
-		$this->workers_poll->poll( $this->workers_readable, $this->workers_writeable );
+		$return_address = $this->read_from_socket( $this->ready_response_socket );
+		$response = $this->read_from_socket( $this->ready_response_socket );
+		$agent_socket = $this->pending_request_sockets[ $return_address ];
+		$this->write_to_socket( $agent_socket, $response );
+		unset( $this->pending_request_sockets[ $return_address ] );
+		socket_close( $agent_socket );
 	}
 }
+
