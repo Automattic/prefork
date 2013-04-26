@@ -10,9 +10,11 @@ class Prefork {
 	public $frontend_address = "127.0.0.1";
 	public $frontend_port = 8081;
 	public $frontend_backlog = 64;
-	public $backend_request_address = "/tmp/prefork-backend-request";
+	public $backend_request_address = "127.0.0.1";
+	public $backend_request_port = 8082;
 	public $backend_request_backlog = 64;
-	public $backend_response_address = "/tmp/prefork-backend-response";
+	public $backend_response_address = "127.0.0.1";
+	public $backend_response_port = 8083;
 	public $backend_response_backlog = 64;
 
 	// Sockets for listening
@@ -278,8 +280,6 @@ class Prefork {
 		socket_close( $this->frontend_socket );
 		socket_close( $this->backend_request_socket );
 		socket_close( $this->backend_response_socket );
-		unlink( $this->backend_request_address );
-		unlink( $this->backend_response_address );
 	}
 
 	public function fork() {
@@ -372,25 +372,23 @@ class Prefork {
 		socket_listen( $this->frontend_socket, $this->frontend_backlog );
 
 		// Prepare to accept connections from Workers ready for requests
-		@unlink( $this->backend_request_address );
-		$this->backend_request_socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
+		$this->backend_request_socket = socket_create( AF_INET, SOCK_STREAM, 0 );
 		socket_set_option($this->backend_request_socket, SOL_SOCKET, SO_REUSEADDR, 1);
-		socket_bind( $this->backend_request_socket, $this->backend_request_address );
+		socket_bind( $this->backend_request_socket, $this->backend_request_address, $this->backend_request_port );
 		socket_listen( $this->backend_request_socket, $this->backend_request_backlog );
 
 		// Prepare to accept connections from Workers ready with responses
-		@unlink( $this->backend_response_address );
-		$this->backend_response_socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
+		$this->backend_response_socket = socket_create( AF_INET, SOCK_STREAM, 0 );
 		socket_set_option($this->backend_response_socket, SOL_SOCKET, SO_REUSEADDR, 1);
-		socket_bind( $this->backend_response_socket, $this->backend_response_address );
+		socket_bind( $this->backend_response_socket, $this->backend_response_address, $this->backend_response_port );
 		socket_listen( $this->backend_response_socket, $this->backend_response_backlog );
 
 		return true;
 	}
 
 	public function worker__receive_request() {
-		$socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
-		socket_connect( $socket, $this->backend_request_address );
+		$socket = socket_create( AF_INET, SOCK_STREAM, 0 );
+		socket_connect( $socket, $this->backend_request_address, $this->backend_request_port );
 		$this->write_message( $socket, (string) posix_getpid() );
 		$message = $this->read_message( $socket );
 		if ( $message === 'RETIRE' )
@@ -407,8 +405,8 @@ class Prefork {
 	}
 
 	public function intern__send_response_to_service( $response ) {
-		$socket = socket_create( AF_UNIX, SOCK_STREAM, 0 );
-		socket_connect( $socket, $this->backend_response_address );
+		$socket = socket_create( AF_INET, SOCK_STREAM, 0 );
+		socket_connect( $socket, $this->backend_response_address, $this->backend_response_port );
 		$this->write_message( $socket, $this->return_address );
 		$response_message = serialize( $response );
 		$this->write_message( $socket, $response_message );
