@@ -16,9 +16,19 @@ requests.
 ## Requirements
 
 * **PHP 5.4** or higher due to `http_response_code()`
-* **php-cgi** executable due to `headers_list()` not working in CLI
-* **ZeroMQ** for the default transport (**zmq.so** PHP extension)
-* **OR** write your own transport using the provided interface
+* **headers_list()** (PHP-CGI or patched PHP-CLI)
+* **libevent** with `event_base_reinit()`
+
+There are two ways you can satisfy the `headers_list()` requirement.
+Probably the easiest way is to run Prefork in the PHP-CGI executable.
+If this is a problem you can compile PHP-CLI with a small patch which
+enables collecting the `header()` calls. (Normally the CLI SAPI sends
+all `header()` calls to a black hole to save a wee bit of memory; the
+patch simply sets this behavior back to the default so that Prefork
+can access any headers set by the app.)
+
+The `event_base_reinit()` requirement means that the PECL libevent
+0.0.5 is not sufficient. It must be patched and recompiled.
 
 ## Setup
 
@@ -27,8 +37,12 @@ requests.
     <?php
     require 'prefork.php';
     $prefork = new Prefork();
-    $prefork->become_agent();
-    exit;
+    if ( $prefork->become_agent() )
+        exit; // Prefork worked!
+    // Otherwise load and run the app normally
+    require 'my-prefork-app-loader.php';
+    require 'my-postfork-app-runner.php';
+    
 
 #### my-prefork-service.php
 
@@ -37,8 +51,10 @@ requests.
     $prefork = new Prefork();
     $prefork->max_workers = 16;
     $prefork->become_service();
+	// Workers reach this code
     require 'my-prefork-app-loader.php';
     $prefork->fork();
+	// Interns reach this code
     require 'my-postfork-app-runner.php';
     exit;
 
