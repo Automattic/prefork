@@ -28,7 +28,10 @@ patch simply sets this behavior back to the default so that Prefork
 can access any headers set by the app.)
 
 The `event_base_reinit()` requirement means that the PECL libevent
-0.0.5 is not sufficient. It must be patched and recompiled.
+0.0.5 is not sufficient. It must be patched and recompiled. The patch
+adds the PHP function `event_base_reinit()` from
+[bzick](https://github.com/bzick/php-libevent). This is necessary for
+libevent to be used with `pcntl_fork()`.
 
 ## Setup
 
@@ -58,16 +61,14 @@ The `event_base_reinit()` requirement means that the PECL libevent
     require 'my-postfork-app-runner.php';
     exit;
 
-To use ZeroMQ with IPC you must start my-prefork-service.php as the
-user that runs the web server. For example,
-`sudo -u www-user php-cgi -q myservice.php`
 
 ## The several kinds of processes
 
 **Agents**: Whereas a typical web app is loaded and run for requests
 to index.php, Prefork apps are not. Instead, index.php loads only a
 light-weight Agent that forwards requests to the service and serves
-responses back to clients.
+responses back to clients. If the service is unavailable the app can
+still be loaded to serve the request.
 
 **Service**: When you start the service it spawns as many worker
 processes as you configured. Then the service listens for requests on
