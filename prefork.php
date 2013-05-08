@@ -31,20 +31,25 @@ class Prefork {
 	// Service state
 	private $is_service;
 	private $event_base;
-	private $SIGINT; // bool: send self SIGINT on exit
-	private $service_shutdown;
-	private $workers_alive = array();    // pid => time
-	private $workers_starting = array(); // pid => time
-	private $workers_ready = array();    // pid => socket
-	private $workers_assigned = array(); // pid => return address
-	private $workers_obsolete = array(); // pid => time
-	private $requests_waiting = array(); // return address => socket
-	private $requests_working = array(); // return address => socket
+	private $received_SIGINT; // true: reminder to send self SIGINT on exit
+	private $service_shutdown; // true: service is shutting down
+	private $workers_alive = array();      // pid => time
+	private $workers_starting = array();   // pid => time
+	private $workers_ready = array();      // pid => event buffer
+	private $workers_assigned = array();   // pid => return address
+	private $workers_obsolete = array();   // pid => time
+	private $requests_accepted = array();   // return address => time
+	private $requests_sockets = array();   // return address => socket
+	private $requests_buffering = array(); // return address => event buffer
+	private $requests_buffered = array();  // return address => event buffer
+	private $requests_lengths = array();   // return address => int
+	private $requests_working = array();   // return address => event buffer
 
 	// Worker/intern state
 	private $is_worker;
-	private $worker_socket;
 	private $is_intern;
+	private $worker_socket;
+	private $return_address;
 
 	public function become_agent() {
 		$request = $this->agent__package_request();
@@ -104,16 +109,72 @@ class Prefork {
 	public function service__heartbeat() {
 		if ( is_callable( $this->heartbeat_callback ) )
 			call_user_func( $this->heartbeat_callback );
-		$this->service__remove_dead_requests();
 		if ( $this->service_shutdown )
 			$this->service__continue_shutdown();
 		$this->service__supervise_workers();
 	}
 
 	public function service__accept_request() {
+		$start_time = microtime( true );
 		$socket = socket_accept( $this->request_socket );
 		$return_address = (string) intval( $socket );
-		$this->requests_waiting[ $return_address ] = $socket;
+		$this->requests_sockets[ $return_address ] = $socket;
+		$this->requests_accepted[ $return_address ] = $start_time;
+		// Buffer the 4-byte header
+		$event = event_buffer_new( $socket,
+			array( $this, 'service__read_request_header' ),
+			null,
+			array( $this, 'service__read_request_header_error' )
+		);
+		event_buffer_timeout_set( $event, 1, 1 );
+		event_buffer_watermark_set( $event, EV_READ, 4, 4 );
+		event_buffer_base_set( $event, $this->event_base );
+		event_buffer_enable( $event, EV_READ );
+		$this->requests_buffering[ $return_address ] = $event;
+	}
+
+	public function service__read_request_header_error( $event ) {
+		$return_address = array_search( $event, $this->requests_buffering, true );
+		$socket = $this->requests_sockets[ $return_address ];
+		event_buffer_disable( $event, EV_READ | EV_WRITE );
+		event_buffer_free( $event );
+		socket_shutdown( $socket );
+		socket_close( $socket );
+		unset( $this->requests_accepted[ $return_address ] );
+		unset( $this->requests_sockets[ $return_address ] );
+		unset( $this->requests_buffering[ $return_address ] );
+	}
+
+	public function service__read_request_header( $event ) {
+		$return_address = array_search( $event, $this->requests_buffering, true );
+		$header = event_buffer_read( $event, 4 );
+		$length = current( unpack( 'N', $header ) );
+		$this->requests_lengths[ $return_address ] = $length;
+		event_buffer_watermark_set( $event, EV_READ, $length, $length );
+		event_buffer_set_callback( $event,
+			array( $this, 'service__queue_request' ),
+			null,
+			array( $this, 'service__queue_request_error' )
+		);
+		event_buffer_enable( $event, EV_READ );
+	}
+
+	public function service__queue_request_error( $event ) {
+		$return_address = array_search( $event, $this->requests_buffering, true );
+		$socket = $this->requests_sockets[ $return_address ];
+		event_buffer_disable( $event, EV_READ | EV_WRITE );
+		event_buffer_free( $event );
+		socket_shutdown( $socket );
+		socket_close( $socket );
+		unset( $this->requests_accepted[ $return_address ] );
+		unset( $this->requests_sockets[ $return_address ] );
+		unset( $this->requests_buffering[ $return_address ] );
+	}
+
+	public function service__queue_request( $event ) {
+		$return_address = array_search( $event, $this->requests_buffering, true );
+		$this->requests_buffered[ $return_address ] = $event;
+		unset( $this->requests_buffering[ $return_address ] );
 		$this->service__dispatch_request();
 	}
 
@@ -147,17 +208,19 @@ class Prefork {
 	}
 
 	private function service__dispatch_request() {
-		if ( ! $this->requests_waiting )
+		if ( ! $this->requests_buffered )
 			return;
 		if ( ! $this->workers_ready )
 			return;
-		reset( $this->requests_waiting );
-		list( $return_address, $request_socket ) = each( $this->requests_waiting );
+		reset( $this->requests_buffered );
+		list( $return_address, $request_event ) = each( $this->requests_buffered );
+		$request_length = $this->requests_lengths[ $return_address ];
 		// Look for a responsive worker
 		while ( true ) {
 			reset( $this->workers_ready );
 			list( $worker_pid, $worker_socket ) = each( $this->workers_ready );
 			try {
+				socket_set_option( $worker_socket, SOL_SOCKET, SO_SNDTIMEO, array( 'sec' => 0, 'usec' => 10000 ) );
 				$this->write_message( $worker_socket, $return_address );
 			} catch ( Exception $e ) {
 				$this->service__remove_worker( $worker_pid );
@@ -170,12 +233,14 @@ class Prefork {
 			break;
 		}
 		// Send the request to the worker
-		unset( $this->requests_waiting[ $return_address ] );
-		$request_message = $this->read_message( $request_socket );
+		unset( $this->requests_buffered[ $return_address ] );
+		unset( $this->requests_lengths[ $return_address ] );
+		$request_message = event_buffer_read( $request_event, $request_length );
+		event_buffer_disable( $request_event, EV_READ | EV_WRITE );
 		$this->write_message( $worker_socket, $request_message );
 		socket_shutdown( $worker_socket );
 		socket_close( $worker_socket );
-		$this->requests_working[ $return_address ] = $request_socket;
+		$this->requests_working[ $return_address ] = $request_event;
 		$this->workers_assigned[ $worker_pid ] = $return_address;
 	}
 
@@ -192,12 +257,37 @@ class Prefork {
 
 	private function service__return_response( $return_address, $response_message ) {
 		if ( array_key_exists( $return_address, $this->requests_working ) ) {
-			$request_socket = $this->requests_working[ $return_address ];
-			$this->write_message( $request_socket, $response_message );
-			socket_shutdown( $request_socket );
-			socket_close( $request_socket );
-			unset( $this->requests_working[ $return_address ] );
+			$length = strlen( $response_message );
+			$event = $this->requests_working[ $return_address ];
+			event_buffer_disable( $event, EV_READ | EV_WRITE );
+			event_buffer_watermark_set( $event, EV_WRITE, 0, 0 );
+			event_buffer_timeout_set( $event, 1, 1 );
+			event_buffer_set_callback( $event,
+				null,
+				array( $this, 'service__close_request' ),
+				array( $this, 'service__return_response_error' ),
+				$return_address
+			);
+			event_buffer_enable( $event, EV_WRITE );
+			$header = pack( 'N', $length );
+			event_buffer_write( $event, $header );
+			event_buffer_write( $event, $response_message );
 		}
+	}
+
+	public function service__return_response_error( $event, $return_address ) {
+		$this->service__close_request( $event, $return_address );
+	}
+
+	public function service__close_request( $event, $return_address ) {
+		event_buffer_disable( $event, EV_READ | EV_WRITE );
+		event_buffer_free( $event );
+		$request_socket = $this->requests_sockets[ $return_address ];
+		socket_shutdown( $request_socket );
+		socket_close( $request_socket );
+		unset( $this->requests_working[ $return_address ] );
+		unset( $this->requests_accepted[ $return_address ] );
+		unset( $this->requests_sockets[ $return_address ] );
 	}
 
 	public function service__SIGCHLD() {
@@ -222,10 +312,10 @@ class Prefork {
 	}
 
 	public function service__SIGINT() {
-		$this->SIGINT = true;
+		$this->received_SIGINT = true;
 		if ( $this->service_shutdown ) {
-			fwrite( STDERR, "Requests waiting: "
-				. count( $this->requests_waiting )
+			fwrite( STDERR, "Requests accepted: "
+				. count( $this->requests_accepted )
 				. " working: "
 				. count( $this->requests_working )
 				. PHP_EOL );
@@ -273,20 +363,6 @@ class Prefork {
 		}
 	}
 
-	private function service__remove_dead_requests() {
-		if ( empty( $this->requests_working ) )
-			return;
-		$r = $e = array_values( $this->requests_working );
-		$w = null;
-		if ( socket_select( $r, $w, $e, 0 ) ) {
-			foreach ( $r as $socket ) {
-				$key = array_search( $socket,
-					$this->requests_working );
-				unset( $this->requests_working[$key] );
-			}
-		}
-	}
-
 	private function agent__package_request() {
 		$request = array();
 		if ( isset( $_SERVER ) )  $request['SERVER']  = $_SERVER;
@@ -297,8 +373,8 @@ class Prefork {
 		if ( isset( $_FILES ) )   $request['FILES']   = $_FILES;
 		if ( isset( $_SESSION ) ) $request['SESSION'] = $_SESSION;
 		if ( isset( $_ENV ) )     $request['ENV']     = $_ENV;
-		if ( empty( $_POST ) && isset( $HTTP_RAW_POST_DATA ) )
-			$request['HRPD'] = $HTTP_RAW_POST_DATA;
+		if ( $_SERVER['REQUEST_METHOD'] === 'POST' )
+			$request['HRPD'] = file_get_contents( 'php://input' );//$HTTP_RAW_POST_DATA;
 		return $request;
 	}
 
@@ -333,6 +409,15 @@ class Prefork {
 				event_del( $event );
 				event_free( $event );
 				unset( $this->events[$i] );
+			}
+			$bufferevents = array_merge(
+				$this->requests_buffering,
+				$this->requests_buffered,
+				$this->requests_working
+			);
+			foreach ( $bufferevents as $event ) {
+				event_buffer_disable( $event, EV_READ | EV_WRITE );
+				event_buffer_free( $event );
 			}
 			event_base_free( $this->event_base );
 			unset( $this->event_base );
@@ -372,15 +457,13 @@ class Prefork {
 
 	private function service__continue_shutdown() {
 		// Delay shutdown until all accepted requests are completed
-		if ( $this->requests_waiting )
-			return;
-		if ( $this->requests_working )
+		if ( $this->requests_accepted )
 			return;
 		event_base_loopbreak( $this->event_base );
 		foreach ( $this->workers_alive as $pid => $time )
 			posix_kill( $pid, SIGKILL );
 		fwrite( STDERR, "Shutdown complete" . PHP_EOL );
-		if ( $this->SIGINT ) {
+		if ( $this->received_SIGINT ) {
 			pcntl_signal( SIGINT, SIG_DFL );
 			posix_kill( posix_getpid(), SIGINT );
 			// The following unreachable line is merely informative
@@ -390,12 +473,12 @@ class Prefork {
 	}
 
 	public function fork() {
-		// Check requirements
-		if ( ob_get_level() > 1 )
-			die( 'Prefork Error: other output buffers already started in application loader.' );
 		// Prefork service did not start so proceed as a typical web request
 		if ( ! $this->is_service )
 			return;
+		// Check requirements
+		if ( ob_get_level() > 1 )
+			die( 'Prefork Error: other output buffers already started in application loader.' );
 		if ( is_callable( $this->prefork_callback ) )
 			call_user_func( $this->prefork_callback );
 		// The worker stays in this loop, spawning slaves
@@ -410,6 +493,8 @@ class Prefork {
 			if ( !$this->single_interns )
 				$this->wait_for_resources();
 			$request_message = $this->worker__receive_request();
+			if ( empty( $request_message ) )
+				continue;
 			if ( $this->worker__become_intern() )
 				break;
 			unset( $request_message );
@@ -454,7 +539,7 @@ class Prefork {
 		if ( isset( $request['FILES'] ) )   $_FILES   = $request['FILES'];
 		if ( isset( $request['SESSION'] ) ) $_SESSION = $request['SESSION'];
 		if ( isset( $request['ENV'] ) )     $_ENV     = $request['ENV'];
-		if ( isset( $request['HRPD'] ) )    $HTTP_RAW_POST_DATA = $request['HRPD'];
+		if ( isset( $request['HRPD'] ) )    $GLOBALS['HTTP_RAW_POST_DATA'] = $request['HRPD'];
 		// Prepare to collect output
 		ob_start( array( $this, 'intern__ob_handler' ) );
 	}
@@ -471,7 +556,7 @@ class Prefork {
 
 	private function agent__transact_with_service( $request ) {
 		$socket = socket_create( AF_INET, SOCK_STREAM, 0 );
-		socket_set_option( $socket, SOL_SOCKET, SO_SNDTIMEO, array( 'sec' => 0, 'usec' => 5000 ) );
+		socket_set_option( $socket, SOL_SOCKET, SO_SNDTIMEO, array( 'sec' => 0, 'usec' => 10000 ) );
 		socket_set_option( $socket, SOL_SOCKET, SO_RCVTIMEO, array( 'sec' => 30, 'usec' => 0 ) );
 		$connected = @socket_connect( $socket, $this->request_address, $this->request_port );
 		if ( ! $connected )
@@ -559,17 +644,18 @@ class Prefork {
 	}
 
 	private function read_message( $socket ) {
-		socket_recv( $socket, $header, 4, MSG_WAITALL );
+		// Receive header indicating message length
+		$recv = socket_recv( $socket, $header, 4, MSG_WAITALL );
 		if ( strlen( $header ) !== 4 )
 			throw new Exception( "Prefork::read_message() failed receiving header" );
 		$length = current( unpack( 'N', $header ) );
-		socket_recv( $socket, $message, $length, MSG_WAITALL );
+		$recv = socket_recv( $socket, $message, $length, MSG_WAITALL );
 		if ( strlen( $message ) !== $length )
 			throw new Exception( "Prefork::read_message() failed receiving message" );
 		return $message;
 	}
 
-	private function write_message( $socket, $message ) {
+	private function write_message( $socket, $message, $debug = false ) {
 		$length = strlen( $message );
 		$header = pack( 'N', $length );
 		$header_sent = socket_send( $socket, $header, 4, 0 ) === 4;
