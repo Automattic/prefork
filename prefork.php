@@ -23,6 +23,22 @@ class Prefork {
 	public $response_port = 8320;
 	public $response_backlog = 64;
 
+	// INI file support
+	private $ini_file;
+	private $ini_options = array(
+		'min_free_ram',
+		'heartbeat_bpm',
+		'max_workers', 'single_interns',
+		'request_address', 'request_port', 'request_backlog',
+		'offer_address', 'offer_port', 'offer_backlog',
+		'response_address', 'response_port', 'response_backlog',
+	);
+	private $ini_options_HUP = array(
+		'min_free_ram',
+		'heartbeat_bpm',
+		'max_workers', 'single_interns',
+	);
+
 	// Sockets for listening
 	private $request_socket;  // for Agents transacting with Service 
 	private $offer_socket;    // for Workers offering to handle Requests
@@ -64,6 +80,26 @@ class Prefork {
 	private $worker_socket;
 	private $request_id;
 
+	public function __construct( $ini_file = null ) {
+		if ( isset( $ini_file ) && file_exists( $ini_file ) ) {
+			$this->ini_file = $ini_file;
+			$this->parse_ini( $this->ini_file );
+		}
+	}
+
+	public function parse_ini( $ini_file, $HUP = false ) {
+		$ini = parse_ini_file( $ini_file );
+		if ( ! $ini ) {
+			error_log( 'Prefork failed to parse INI file ' . $ini_file );
+			return;
+		}
+		$options = $HUP ? $this->ini_options_HUP : $this->ini_options;
+		foreach ( $options as $option ) {
+			if ( isset( $ini[ $option ] ) )
+				$this->{$option} = $ini[ $option ];
+		}
+	}
+
 	public function become_agent() {
 		$request = $this->agent__package_request();
 		$response = $this->agent__transact_with_service( $request );
@@ -77,8 +113,6 @@ class Prefork {
 	public function become_service() {
 		if ( version_compare( PHP_VERSION, '5.4', '<' ) )
 			die( 'Error: Prefork requires PHP 5.4 for http_response_code().' . PHP_EOL );
-		if ( ! defined( 'STDERR' ) )
-			define( 'STDERR', fopen( 'php://stderr', 'w' ) );
 		if ( ! $this->service__create_sockets() )
 			return false;
 		$this->is_service = true;
@@ -116,7 +150,7 @@ class Prefork {
 		event_base_loop( $this->event_base );
 		if ( ! $this->is_worker ) {
 			// Only workers should reach this code.
-			fwrite( STDERR, "Service left event loop" . PHP_EOL );
+			error_log( "Prefork service left event loop" );
 			exit(1);
 		}
 	}
@@ -474,6 +508,9 @@ class Prefork {
 	}
 
 	public function service__SIGHUP() {
+		// Reload INI options
+		if ( isset( $this->ini_file ) && file_exists( $this->ini_file ) )
+			$this->parse_ini( $this->ini_file, true );
 		// Make old workers obsolete
 		$this->workers_obsolete = $this->workers_alive;
 		// Spawn replacements
@@ -485,19 +522,21 @@ class Prefork {
 
 	public function service__SIGINT() {
 		$this->received_SIGINT = true;
-		if ( $this->service_shutdown ) {
-			fwrite( STDERR, "Requests accepted: "
-				. count( $this->requests_started )
-				. " working: "
-				. count( $this->requests_working )
-				. PHP_EOL );
+		error_log( "Prefork caught SIGINT. Requests accepted: "
+			. count( $this->requests_accepted )
+			. " working: "
+			. count( $this->requests_working ) );
+		if ( $this->service_shutdown )
 			return $this->service__continue_shutdown();
-		}
 		$this->service__begin_shutdown();
 	}
 
 	public function service__SIGTERM() {
 		$this->received_SIGTERM = true;
+		error_log( "Prefork caught SIGTERM. Requests accepted: "
+			. count( $this->requests_accepted )
+			. " working: "
+			. count( $this->requests_working ) );
 		if ( $this->service_shutdown )
 			return $this->service__continue_shutdown();
 		$this->service__begin_shutdown();
@@ -624,7 +663,7 @@ class Prefork {
 	}
 
 	private function service__begin_shutdown() {
-		fwrite( STDERR, "Service shutting down" . PHP_EOL );
+		error_log( "Prefork service shutdown intiated" );
 		// Stop listening for events on the request port
 		event_del( $this->events['request'] );
 		// Release the port so the next service can bind it
@@ -639,7 +678,7 @@ class Prefork {
 		event_base_loopbreak( $this->event_base );
 		foreach ( $this->workers_alive as $pid => $time )
 			posix_kill( $pid, SIGKILL );
-		fwrite( STDERR, "Shutdown complete" . PHP_EOL );
+		error_log( "Prefork service shutdown complete" );
 		if ( $this->received_SIGINT ) {
 			pcntl_signal( SIGINT, SIG_DFL );
 			posix_kill( posix_getpid(), SIGINT );
