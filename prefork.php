@@ -32,6 +32,7 @@ class Prefork {
 	private $is_service;
 	private $event_base;
 	private $received_SIGINT; // true: reminder to send self SIGINT on exit
+	private $received_SIGTERM; // true: reminder to send self SIGTERM on exit
 	private $service_shutdown; // true: service is shutting down
 	private $workers_alive = array();       // worker_pid => time
 	private $workers_starting = array();    // worker_pid => time
@@ -96,6 +97,8 @@ class Prefork {
 			'service__SIGHUP' );
 		$this->event_add( 'SIGINT', SIGINT, EV_SIGNAL | EV_PERSIST,
 			'service__SIGINT' );
+		$this->event_add( 'SIGTERM', SIGTERM, EV_SIGNAL | EV_PERSIST,
+			'service__SIGTERM' );
 		// Socket handlers
 		$this->event_add( 'request', $this->request_socket,
 			EV_READ | EV_PERSIST, 'service__accept_request' );
@@ -493,6 +496,13 @@ class Prefork {
 		$this->service__begin_shutdown();
 	}
 
+	public function service__SIGTERM() {
+		$this->received_SIGTERM = true;
+		if ( $this->service_shutdown )
+			return $this->service__continue_shutdown();
+		$this->service__begin_shutdown();
+	}
+
 	private function service__retire_worker( $pid ) {
 		// Do we have a socket to the worker?
 		if ( isset( $this->workers_ready[ $pid ] ) ) {
@@ -635,6 +645,12 @@ class Prefork {
 			posix_kill( posix_getpid(), SIGINT );
 			// The following unreachable line is merely informative
 			exit(130);
+		}
+		if ( $this->received_SIGTERM ) {
+			pcntl_signal( SIGTERM, SIG_DFL );
+			posix_kill( posix_getpid(), SIGTERM );
+			// The following unreachable line is merely informative
+			exit(143);
 		}
 		exit(0);
 	}
