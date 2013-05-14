@@ -573,9 +573,10 @@ class Prefork {
 	private function service__retire_worker( $pid ) {
 		// Do we have a socket to the worker?
 		if ( isset( $this->workers_ready[ $pid ] ) ) {
-			$socket = $this->workers_ready[ $pid ];
+			$offer = $this->workers_ready[ $pid ];
+			$socket = $this->offers_sockets[ $offer ];
 			try {
-				@$this->write_message( $socket, 'RETIRE' );
+				@socket_send( $socket, 'BYE!', 4, 0 );
 			} catch ( Exception $e ) { }
 		}
 		$this->service__remove_worker( $pid );
@@ -655,9 +656,15 @@ class Prefork {
 				unset( $this->events[$i] );
 			}
 			$bufferevents = array_merge(
+				$this->offers_accepted,
+				$this->offers_waiting,
+				$this->offers_written,
 				$this->requests_accepted,
 				$this->requests_buffered,
-				$this->requests_working
+				$this->requests_written,
+				$this->requests_working,
+				$this->responses_accepted,
+				$this->responses_buffering
 			);
 			foreach ( $bufferevents as $event ) {
 				event_buffer_disable( $event, EV_READ | EV_WRITE );
@@ -854,9 +861,9 @@ class Prefork {
 		socket_connect( $socket, $this->offer_address, $this->offer_port );
 		socket_send( $socket, $message, 4, 0 );
 		socket_recv( $socket, $buffer, 4, MSG_WAITALL );
-		$message = current( unpack( 'N', $buffer ) );
-		if ( ! $message )
+		if ( ! $buffer || $buffer === 'BYE!' )
 			$this->worker__retire();
+		$message = current( unpack( 'N', $buffer ) );
 		$this->request_id = $message;
 		$request_message = $this->read_message( $socket );
 		socket_shutdown( $socket );
