@@ -44,8 +44,9 @@ libevent to be used with `pcntl_fork()`.
         exit; // Prefork worked!
     // Otherwise load and run the app normally
     require 'my-prefork-app-loader.php';
-    require 'my-postfork-app-runner.php';
-    
+    run_my_app();
+	exit;
+
 
 #### my-prefork-service.php
 
@@ -58,7 +59,7 @@ libevent to be used with `pcntl_fork()`.
     require 'my-prefork-app-loader.php';
     $prefork->fork();
 	// Interns reach this code
-    require 'my-postfork-app-runner.php';
+    run_my_app();
     exit;
 
 
