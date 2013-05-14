@@ -1,6 +1,9 @@
 <?php
 
 class Prefork {
+	public $pidfile;
+	public $daemonize = true;
+
 	// Resource limits for multi-intern workers to observe
 	public $min_free_ram = 0.20; // Minimum free RAM (MemFree / MemTotal)
 
@@ -26,6 +29,7 @@ class Prefork {
 	// INI file support
 	private $ini_file;
 	private $ini_options = array(
+		'pidfile', 'daemonize',
 		'min_free_ram',
 		'heartbeat_bpm',
 		'max_workers', 'single_interns',
@@ -116,9 +120,33 @@ class Prefork {
 		if ( ! $this->service__create_sockets() )
 			return false;
 		$this->is_service = true;
+		if ( $this->daemonize ) {
+			// Detach from calling process
+			$pid = pcntl_fork();
+			if ( $pid < 0 )
+				exit(1);
+			if ( $pid > 0 )
+				exit(0);
+			@umask(0);
+			@posix_setsid();
+		}
+		$this->service__create_pidfile();
 		// The service stays in this call while workers return from it
 		$this->service__event_loop();
 		return true;
+	}
+
+	private function service__create_pidfile() {
+		if ( ! isset( $this->pidfile ) )
+			return;
+		$pid = posix_getpid();
+		file_put_contents( $this->pidfile, $pid . PHP_EOL );
+	}
+
+	private function service__unlink_pidfile() {
+		if ( ! isset( $this->pidfile ) )
+			return;
+		unlink( $this->pidfile );
 	}
 
 	private function service__event_loop() {
@@ -678,6 +706,7 @@ class Prefork {
 		event_base_loopbreak( $this->event_base );
 		foreach ( $this->workers_alive as $pid => $time )
 			posix_kill( $pid, SIGKILL );
+		$this->service__unlink_pidfile();
 		error_log( "Prefork service shutdown complete" );
 		if ( $this->received_SIGINT ) {
 			pcntl_signal( SIGINT, SIG_DFL );
