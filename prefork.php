@@ -779,12 +779,16 @@ class Prefork {
 
 	private function has_free_resources() {
 		$meminfo = file_get_contents( '/proc/meminfo' ); // Linux
-		preg_match( '/MemTotal:\s+(\d+)/', $meminfo, $matches );
+		preg_match( '/^MemTotal:\s+(\d+)/m', $meminfo, $matches );
 		$total = $matches[1];
-		preg_match( '/MemFree:\s+(\d+)/', $meminfo, $matches );
+		preg_match( '/^MemFree:\s+(\d+)/m', $meminfo, $matches );
 		$free = $matches[1];
-		$free_ram = $free / $total;
-		return ( $free_ram > $this->min_free_ram );
+		preg_match( '/^Buffers:\s+(\d+)/m', $meminfo, $matches );
+		$buffers = $matches[1];
+		preg_match( '/^Cached:\s+(\d+)/m', $meminfo, $matches );
+		$cached = $matches[1];
+		$free_ram = $free + $buffers + $cached;
+		return ( $free_ram / $total > $this->min_free_ram );
 	}
 
 	private function intern__prepare_request( $request ) {
