@@ -90,7 +90,7 @@ sends an error response.
 
 ## Understanding prefork vs. postfork
 
-* Code before `$prefore->fork()` is run only once for each worker.
+* Code before `$prefork->fork()` is run only once for each worker.
 * Code after `$prefork->fork()` is run for each request processed.
 
 There is an important limitation on what can be done in a prefork app
