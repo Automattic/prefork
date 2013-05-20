@@ -114,6 +114,14 @@ class Prefork {
 		return true;
 	}
 
+	public function become_status_agent() {
+		$response = $this->agent__request_status_from_service();
+		if ( $response === false )
+			return false;
+		$this->agent__output_response( $response );
+		return true;
+	}
+
 	public function become_service() {
 		if ( version_compare( PHP_VERSION, '5.4', '<' ) )
 			die( 'Error: Prefork requires PHP 5.4 for http_response_code().' . PHP_EOL );
@@ -224,6 +232,11 @@ class Prefork {
 
 	public function service__read_request_header( $request_event, $request_id ) {
 		$header = event_buffer_read( $request_event, 4 );
+		if ( $header === 'stat' ) {
+			unset( $this->requests_accepted[ $request_id ] );
+			$this->requests_working[ $request_id ] = $request_event;
+			return $this->service__respond_to_status_request( $request_event, $request_id );
+		}
 		$length = current( unpack( 'N', $header ) );
 		$this->requests_lengths[ $request_id ] = $length;
 		event_buffer_watermark_set( $request_event, EV_READ, $length, $length );
@@ -814,6 +827,39 @@ class Prefork {
 		);
 		$this->intern__send_response_to_service( $response );
 		return '';
+	}
+
+	private function agent__request_status_from_service() {
+		$socket = socket_create( AF_INET, SOCK_STREAM, 0 );
+		socket_set_option( $socket, SOL_SOCKET, SO_SNDTIMEO, array( 'sec' => 0, 'usec' => 10000 ) );
+		socket_set_option( $socket, SOL_SOCKET, SO_RCVTIMEO, array( 'sec' => 30, 'usec' => 0 ) );
+		$connected = @socket_connect( $socket, $this->request_address, $this->request_port );
+		if ( ! $connected )
+			return false;
+		socket_send( $socket, 'stat', 4, 0 );
+		$response_message = $this->read_message( $socket );
+		$response = unserialize( $response_message );
+		return $response;
+	}
+
+	private function service__respond_to_status_request( $request_event, $request_id ) {
+		$response = $this->service__create_status_response();
+		$response_message = serialize( $response );
+		$this->service__return_response( $request_id, $response_message );
+	}
+
+	private function service__create_status_response() {
+		$report = '';
+		foreach ( get_class_vars( __CLASS__ ) as $var => $default )
+			if ( $default === array() )
+				$report .= "$var: " . count( $this->{$var} ) . PHP_EOL;
+		return array(
+			'code' => 200,
+			'headers' => array(
+				'X-Prefork-Status: OK',
+			),
+			'body' => $report,
+		);
 	}
 
 	private function agent__transact_with_service( $request ) {
