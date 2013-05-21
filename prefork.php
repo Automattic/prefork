@@ -607,6 +607,11 @@ class Prefork {
 			@socket_shutdown( $socket );
 			@socket_close( $socket );
 		}
+		if ( $offer_id = array_search( $pid, $this->offers_workers, true ) ) {
+			unset( $this->offers_sockets[ $offer_id ] );
+			unset( $this->offers_waiting[ $offer_id ] );
+			unset( $this->offers_workers[ $offer_id ] );
+		}
 		unset( $this->workers_ready[ $pid ] );
 		unset( $this->workers_obsolete[ $pid ] );
 		unset( $this->workers_starting[ $pid ] );
@@ -850,12 +855,19 @@ class Prefork {
 
 	private function service__create_status_response() {
 		$report = '';
-		foreach ( get_class_vars( __CLASS__ ) as $var => $default )
-			if ( $default === array() )
-				$report .= "$var: " . count( $this->{$var} ) . PHP_EOL;
+		foreach ( get_class_vars( __CLASS__ ) as $var => $default ) {
+			if ( $default === array() ) {
+				$count = count( $this->{$var} );
+				// Scrub the current status request from the counts
+				if ( $var == 'requests_started' || $var == 'requests_sockets' || $var == 'requests_working' )
+					--$count;
+				$report .= "$var: $count" . PHP_EOL;
+			}
+		}
 		return array(
 			'code' => 200,
 			'headers' => array(
+				'Content-Type: text/plain',
 				'X-Prefork-Status: OK',
 			),
 			'body' => $report,
