@@ -712,6 +712,11 @@ class Prefork {
 		$pid = pcntl_fork();
 		if ( $pid === -1 )
 			die( "Fork failure\n" );
+		if ( $pid === 0 ) {
+			// Re-seed the child's PRNGs
+			srand();
+			mt_srand();
+		}
 		return $pid;
 	}
 
