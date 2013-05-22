@@ -596,18 +596,11 @@ class Prefork {
 	}
 
 	private function service__remove_worker( $pid ) {
-		// Have we assigned requests to this worker?
-		while ( $request_id = array_search( $pid, $this->requests_assigned ) ) {
-			$response = $this->create_error_response();
-			$response_message = serialize( $response );
-			$this->service__return_response( $request_id, $response_message );
-		}
 		if ( isset( $this->workers_ready[ $pid ] ) ) {
-			$socket = $this->workers_ready[ $pid ];
+			$offer_id = $this->workers_ready[ $pid ];
+			$socket = $this->offers_sockets[ $offer_id ];
 			@socket_shutdown( $socket );
 			@socket_close( $socket );
-		}
-		if ( $offer_id = array_search( $pid, $this->offers_workers, true ) ) {
 			unset( $this->offers_sockets[ $offer_id ] );
 			unset( $this->offers_waiting[ $offer_id ] );
 			unset( $this->offers_workers[ $offer_id ] );
