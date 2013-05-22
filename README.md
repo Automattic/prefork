@@ -16,8 +16,9 @@ requests.
 ## Requirements
 
 * **PHP 5.4** or higher due to `http_response_code()`
+* **libevent** with
+    [PECL package](http://pecl.php.net/package/libevent) >= 0.1.0
 * **headers_list()** (PHP-CGI or patched PHP-CLI)
-* **libevent** with `event_base_reinit()`
 
 There are two ways you can satisfy the `headers_list()` requirement.
 Probably the easiest way is to run Prefork in the PHP-CGI executable.
@@ -26,12 +27,6 @@ enables collecting the `header()` calls. (Normally the CLI SAPI sends
 all `header()` calls to a black hole to save a wee bit of memory; the
 patch simply sets this behavior back to the default so that Prefork
 can access any headers set by the app.)
-
-The `event_base_reinit()` requirement means that the PECL libevent
-0.0.5 is not sufficient. It must be patched and recompiled. The patch
-adds the PHP function `event_base_reinit()` from
-[bzick](https://github.com/bzick/php-libevent). This is necessary for
-libevent to be used with `pcntl_fork()`.
 
 ## Setup
 
