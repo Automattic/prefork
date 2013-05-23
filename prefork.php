@@ -555,7 +555,7 @@ class Prefork {
 		// Make old workers obsolete
 		$this->workers_obsolete = $this->workers_alive;
 		// Spawn replacements
-		for ( $i = $this->max_workers; $i > 0; --$i ) {
+		for ( $i = $this->max_workers - count( $this->workers_starting ); $i > 0; --$i ) {
 			if ( $this->service__become_worker() )
 				return;
 		}
