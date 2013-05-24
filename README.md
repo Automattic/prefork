@@ -34,8 +34,8 @@ can access any headers set by the app.)
 
     <?php
     require 'prefork.php';
-    $prefork = new Prefork();
-    if ( $prefork->become_agent() )
+    Prefork::use_ini_file( 'prefork.ini' );
+    if ( Prefork::start_agent() )
         exit; // Prefork worked!
     // Otherwise load and run the app normally
     require 'my-prefork-app-loader.php';
@@ -47,12 +47,11 @@ can access any headers set by the app.)
 
     <?php
     require 'prefork.php';
-    $prefork = new Prefork();
-    $prefork->max_workers = 16;
-    $prefork->become_service();
+	Prefork::use_ini_file( 'prefork.ini' );
+    Prefork::become_service();
 	// Workers reach this code
     require 'my-prefork-app-loader.php';
-    $prefork->fork();
+    Prefork::fork();
 	// Interns reach this code
     run_my_app();
     exit;
@@ -85,8 +84,8 @@ sends an error response.
 
 ## Understanding prefork vs. postfork
 
-* Code before `$prefork->fork()` is run only once for each worker.
-* Code after `$prefork->fork()` is run for each request processed.
+* Code before `Prefork::fork()` is run only once for each worker.
+* Code after `Prefork::fork()` is run for each request processed.
 
 There is an important limitation on what can be done in a prefork app
 loader.  Generally, don't rely on any conditions or values set by the
@@ -94,7 +93,7 @@ request; you may only rely on conditions and values that are constant
 across all requests.
 
 Superglobal request variables (`$_GET`, `$_POST`, `$_COOKIE`,
-`$_SERVER`, etc.) are not ready until after `$prefork->fork()`. You
+`$_SERVER`, etc.) are not ready until after `Prefork::fork()`. You
 MUST NOT access them earlier.
 
 Certian resource types are reused by each of one worker's interns in
@@ -103,19 +102,19 @@ reused, but with no concurrency due to the limit of one intern per
 worker. Thus if you use any persistent resources like these, you
 should understand that their state is as clean as it was left by the
 last intern. If they must be cleaned prior to use in the next request,
-your app may use `$prefork->postfork_callback`.
+your app may use `postfork_callback`.
 
 ## `prefork_callback` and `postfork_callback`
 
 If you assign a callable to either of these, your callback will be run
 at the appropriate time. This is not strictly necessary because you
 can put the same code before and after your call to
-`$prefork->fork()`. The callback options add power for apps which need
-it. For example, an app that calls `$prefork->fork()` in several
+`Prefork::fork()`. The callback options add power for apps which need
+it. For example, an app that calls `Prefork::fork()` in several
 different places can use the callbacks instead of duplicating code
 before and after each call.
 
-## Call `$prefork->fork()` in several different places?
+## Call `Prefork::fork()` in several different places?
 
 A good example is WordPress. This app has two major modes. In the
 first mode, only one "site" is installed so the theme and plugins are
