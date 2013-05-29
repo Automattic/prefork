@@ -992,6 +992,8 @@ class Prefork_Worker extends Prefork_Service {
 	}
 
 	private function has_free_resources() {
+		if ( ! $this->min_free_ram )
+			return true;
 		$meminfo = file_get_contents( '/proc/meminfo' ); // Linux
 		preg_match( '/^MemTotal:\s+(\d+)/m', $meminfo, $matches );
 		$total = $matches[1];
