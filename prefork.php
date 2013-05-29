@@ -47,6 +47,17 @@ class Prefork {
 class Prefork_Role {
 	protected $ini_file;
 
+	// Sockets config -- use different ports if you run multiple services
+	public $request_address = "127.0.0.1";
+	public $request_port = 8300;
+	public $request_backlog = 64;
+	public $offer_address = "127.0.0.1";
+	public $offer_port = 8310;
+	public $offer_backlog = 64;
+	public $response_address = "127.0.0.1";
+	public $response_port = 8320;
+	public $response_backlog = 64;
+
 	/**
 	 * Load options from $ini_array, then override with $ini_file options.
 	 * Load only those options specified in the role's $ini_options array.
@@ -126,9 +137,6 @@ class Prefork_Agent extends Prefork_Role {
 		'request_address',
 		'request_port',
 	);
-
-	protected $request_address;
-	protected $request_port;
 
 	public function start() {
 		$request = $this->package_request();
@@ -226,17 +234,6 @@ class Prefork_Service extends Prefork_Role {
 	public $single_interns = true; // Limit interns to one per worker
 	public $prefork_callback;    // Optional: to be run before forking
 	public $postfork_callback;   // Optional: to be run after forking
-
-	// Sockets config -- use different ports if you run multiple services
-	public $request_address = "127.0.0.1";
-	public $request_port = 8300;
-	public $request_backlog = 64;
-	public $offer_address = "127.0.0.1";
-	public $offer_port = 8310;
-	public $offer_backlog = 64;
-	public $response_address = "127.0.0.1";
-	public $response_port = 8320;
-	public $response_backlog = 64;
 
 	protected $ini_options = array(
 		'pidfile', 'daemonize',
