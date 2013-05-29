@@ -33,6 +33,7 @@ can access any headers set by the app.)
 #### index.php
 
     <?php
+    // This script takes the place of your app's index.php
     require 'prefork.php';
     Prefork::use_ini_file( 'prefork.ini' );
     if ( Prefork::start_agent() )
@@ -40,19 +41,20 @@ can access any headers set by the app.)
     // Otherwise load and run the app normally
     require 'my-prefork-app-loader.php';
     run_my_app();
-	exit;
+    exit;
 
 
 #### my-prefork-service.php
 
     <?php
+    // This script is the daemon
     require 'prefork.php';
-	Prefork::use_ini_file( 'prefork.ini' );
+    Prefork::use_ini_file( 'prefork.ini' );
     Prefork::become_service();
-	// Workers reach this code
+    // Workers reach this code
     require 'my-prefork-app-loader.php';
     Prefork::fork();
-	// Interns reach this code
+    // Interns reach this code
     run_my_app();
     exit;
 
@@ -71,13 +73,16 @@ its front-end socket and responses on its back-end, shuttling those
 between agents and workers.
 
 **Workers**: These processes load the app code and initialize any data
-structures that are constant between requests. Then they wait for
-requests to come along from the Service. Each request causes one
-worker to spawn one Intern and then wait until the intern has exited.
+structures that are constant between requests. Then they connect to
+the service to offer to handle a request. When a request arrives, the
+worker spawns an intern to handle it. In single-intern mode, a worker
+will wait until the intern exits before connecting to the service to
+extend another offer. Otherwise, the worker offers to take another
+request as soon as system resources allow.
 
 **Interns**: These processes are exact copies of their parents
 (Workers) so their environments are perfectly set up for running the
-app to generate a response.  They have the fully loaded app, the
+app to generate a response. They have the fully loaded app, the
 request variables and a way to return the response to the Agent via
 the Service. If an Intern exits abnormally then its Worker process
 sends an error response.
@@ -88,7 +93,7 @@ sends an error response.
 * Code after `Prefork::fork()` is run for each request processed.
 
 There is an important limitation on what can be done in a prefork app
-loader.  Generally, don't rely on any conditions or values set by the
+loader. Generally, don't rely on any conditions or values set by the
 request; you may only rely on conditions and values that are constant
 across all requests.
 
