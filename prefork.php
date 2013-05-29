@@ -150,7 +150,7 @@ class Prefork_Agent extends Prefork_Role {
 		if ( isset( $_FILES ) )   $request['FILES']   = $_FILES;
 		if ( isset( $_SESSION ) ) $request['SESSION'] = $_SESSION;
 		if ( isset( $_ENV ) )     $request['ENV']     = $_ENV;
-		if ( $_SERVER['REQUEST_METHOD'] === 'POST' && empty( $_POST ) )
+		if ( $_SERVER['REQUEST_METHOD'] === 'POST' )
 			$request['HRPD'] = file_get_contents( 'php://input' );
 		return $request;
 	}
