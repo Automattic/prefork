@@ -374,9 +374,9 @@ class Prefork_Service extends Prefork_Role {
 			array( $this, 'read_request_header_error' ),
 			$request_id
 		);
-		event_buffer_timeout_set( $event, 1, 1 );
 		event_buffer_watermark_set( $event, EV_READ, 4, 4 );
 		event_buffer_base_set( $event, $this->event_base );
+		event_buffer_timeout_set( $event, 1, 1 );
 		event_buffer_enable( $event, EV_READ );
 		$this->requests_accepted[ $request_id ] = $event;
 	}
@@ -440,9 +440,9 @@ class Prefork_Service extends Prefork_Role {
 			array( $this, 'read_offer_error' ),
 			$offer_id
 		);
-		event_buffer_timeout_set( $event, 1, 1 );
 		event_buffer_watermark_set( $event, EV_READ, 4, 4 );
 		event_buffer_base_set( $event, $this->event_base );
+		event_buffer_timeout_set( $event, 1, 1 );
 		event_buffer_enable( $event, EV_READ );
 		$this->offers_accepted[ $offer_id ] = $event;
 	}
@@ -598,9 +598,9 @@ class Prefork_Service extends Prefork_Role {
 			array( $this, 'read_response_headers_error' ),
 			$response_id
 		);
-		event_buffer_timeout_set( $event, 1, 1 );
 		event_buffer_watermark_set( $event, EV_READ, 8, 8 );
 		event_buffer_base_set( $event, $this->event_base );
+		event_buffer_timeout_set( $event, 1, 1 );
 		event_buffer_enable( $event, EV_READ );
 		$this->responses_accepted[ $response_id ] = $event;
 	}
