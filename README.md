@@ -16,7 +16,7 @@ requests.
 ## Requirements
 
 * **PHP 5.4** or higher due to `http_response_code()`
-* **libevent** with
+* **libevent 2** with
     [PECL package](http://pecl.php.net/package/libevent) >= 0.1.0
 * **headers_list()** (PHP-CGI or patched PHP-CLI)
 

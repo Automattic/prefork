@@ -291,9 +291,13 @@ class Prefork_Service extends Prefork_Role {
 
 	public function start() {
 		if ( version_compare( PHP_VERSION, '5.4', '<' ) )
-			die( 'Error: Prefork requires PHP 5.4 for http_response_code().' . PHP_EOL );
+			$this->fail( 'Error: Prefork requires PHP 5.4 for http_response_code().' );
+		if ( ! $this->test_headers() )
+			$this->fail( 'Error: Prefork requires header() and headers_list(). Use CGI or patched CLI.' );
+		if ( ! function_exists( 'event_base_reinit' ) )
+			$this->fail( 'Error: Prefork requires libevent with event_base_reinit(). Upgrade to 0.1.0.' );
 		if ( ! $this->create_sockets() )
-			return false;
+			$this->fail( 'Error: Prefork failed to bind service socket.' );
 		define( 'PREFORK_SERVICE', true );
 		if ( $this->daemonize ) {
 			// Detach from calling process
@@ -309,6 +313,20 @@ class Prefork_Service extends Prefork_Role {
 		// The service stays in this call while workers return from it
 		$this->event_loop();
 		return true;
+	}
+
+	private function fail( $message ) {
+		print $message . PHP_EOL;
+		exit( 1 );
+	}
+
+	private function test_headers() {
+		$test_header_name = 'X-Prefork-Test-Header';
+		$test_header = "$test_header_name: OK";
+		header( $test_header );
+		$result = in_array( $test_header, headers_list() );
+		header_remove( $test_header_name );
+		return $result;
 	}
 
 	private function create_pidfile() {
