@@ -47,6 +47,8 @@ class Prefork {
 class Prefork_Role {
 	protected $ini_file;
 
+	public $max_message_length = 16777216; // 16MB
+
 	// Sockets config -- use different ports if you run multiple services
 	public $request_address = "127.0.0.1";
 	public $request_port = 8300;
@@ -177,6 +179,7 @@ class Prefork_Agent extends Prefork_Role {
 			$response = unserialize( $response_message );
 			return $response;
 		} catch ( Exception $e ) {
+			error_log( __FUNCTION__ . ' caught Exception: ' . $e->getMessage() );
 			return $this->create_error_response();
 		}
 	}
@@ -258,7 +261,7 @@ class Prefork_Service extends Prefork_Role {
 	private $response_socket; // for Interns/Workers returning Responses
 
 	// Service state
-	private $event_base;
+	public $event_base;
 	private $received_SIGINT; // true: reminder to send self SIGINT on exit
 	private $received_SIGTERM; // true: reminder to send self SIGTERM on exit
 	private $service_shutdown; // true: service is shutting down
@@ -446,6 +449,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function queue_request( $request_event, $request_id ) {
+		event_buffer_disable( $request_event, EV_READ | EV_WRITE );
 		$this->requests_buffered[ $request_id ] = $request_event;
 		unset( $this->requests_accepted[ $request_id ] );
 		$this->dispatch_request();
@@ -547,7 +551,6 @@ class Prefork_Service extends Prefork_Role {
 			return;
 		// Read a buffered request
 		list( $request_id, $request_event ) = $this->take_first( $this->requests_buffered );
-		event_buffer_disable( $request_event, EV_READ | EV_WRITE );
 		event_buffer_set_callback( $request_event,
 			null,
 			null,
@@ -720,6 +723,7 @@ class Prefork_Service extends Prefork_Role {
 		unset( $this->requests_working[ $request_id ] );
 		unset( $this->requests_started[ $request_id ] );
 		unset( $this->requests_sockets[ $request_id ] );
+		unset( $this->requests_assigned[ $request_id ] );
 	}
 
 	public function SIGCHLD() {
@@ -809,11 +813,11 @@ class Prefork_Service extends Prefork_Role {
 			$this->worker_pid = posix_getpid();
 			// The child process ignores SIGINT (small race here)
 			pcntl_sigprocmask( SIG_BLOCK, array(SIGINT) );
+			// and lets go of the parent's libevent base
+			event_base_reinit( $this->event_base );
 			// and breaks out of the service event loop
 			event_base_loopbreak( $this->event_base );
-			// and lets go of the parent's file descriptors
-			event_base_reinit( $this->event_base );
-			// and the whole event structure
+			// and dismantles the whole event structure
 			foreach ( $this->events as $i => $event ) {
 				event_del( $event );
 				event_free( $event );
@@ -932,7 +936,7 @@ class Prefork_Service extends Prefork_Role {
 
 	/***** Internal methods *****/
 
-	private function event_add( $name, $fd, $flags, $callback, $timeout = -1 ) {
+	protected function event_add( $name, $fd, $flags, $callback, $timeout = -1 ) {
 		$event = event_new();
 		event_set( $event, $fd, $flags, array( $this, $callback ) );
 		event_base_set( $event, $this->event_base );
@@ -969,10 +973,20 @@ class Prefork_Worker extends Prefork_Service {
 		$pid = $this->fork_process();
 		if ( $pid === 0 ) {
 			// Interns only past this point
+			event_base_loopbreak( $this->event_base );
+			event_base_reinit( $this->event_base );
+			foreach ( $this->events as $i => $event ) {
+				event_del( $event );
+				event_free( $event );
+				unset( $this->events[$i] );
+			}
+			event_base_free( $this->event_base );
 			$intern->start_request( $request_message );
 			return true;
 		}
 		$this->intern_pid = $pid;
+		if ( ! $this->single_interns )
+			$this->make_offer();
 		return false;
 	}
 
@@ -983,30 +997,123 @@ class Prefork_Worker extends Prefork_Service {
 		if ( is_callable( $this->prefork_callback ) )
 			call_user_func( $this->prefork_callback );
 		// The worker stays in this loop, spawning slaves
+		$this->event_loop();
+	}
+
+	private function event_loop() {
+		$this->event_base = event_base_new();
+		$this->event_add( 'SIGCHLD', SIGCHLD, EV_SIGNAL | EV_PERSIST,
+			'SIGCHLD' );
+		$this->make_offer();
+		event_base_loop( $this->event_base );
+	}
+
+	public function SIGCHLD() {
+		// Reap zombies
 		while ( true ) {
-			// Reap zombies
-			while ( true ) {
-				$pid = pcntl_wait( $status, WNOHANG );
-				if ( $pid < 1 )
-					break;
+			$pid = pcntl_wait( $status, WNOHANG );
+			if ( $pid < 1 )
+				break;
+			if ( ! pcntl_wifexited( $status ) ) {
+				// Intern exited abnormally
+				error_log( "Worker $this->worker_pid caught abnormal exit by intern $pid" );
+				// TODO: send error response
 			}
-			// Multi-intern workers must avoid overloading RAM
-			if ( !$this->single_interns )
-				$this->wait_for_resources();
-			$request_message = $this->receive_request();
-			if ( empty( $request_message ) )
-				continue;
-			if ( $this->become_intern( $request_message ) )
-				return;
-			unset( $request_message );
-			if ( $this->single_interns ) {
-				pcntl_waitpid( $this->intern_pid, $status );
-				if ( $status == 0 )
-					continue;
-				$response = $this->create_error_response();
-				$this->send_response_to_service( $response );
-			}
+			if ( $this->single_interns )
+				$this->make_offer();
 		}
+	}
+
+	private function make_offer() {
+		$this->offer_socket = socket_create( AF_INET, SOCK_STREAM, 0 );
+		//socket_set_nonblock( $this->offer_socket ); // Maybe connect async (change callbacks, add write_offer)
+		socket_connect( $this->offer_socket, $this->offer_address, $this->offer_port );
+		$this->offer_event = event_buffer_new( $this->offer_socket,
+			null,
+			array( $this, 'write_offer_success' ),
+			array( $this, 'write_offer_error' ),
+			null
+		);
+		event_buffer_watermark_set( $this->offer_event, EV_WRITE, 0, 0 );
+		event_buffer_base_set( $this->offer_event, $this->event_base );
+		event_buffer_enable( $this->offer_event, EV_WRITE );
+		$offer = pack( 'N', $this->worker_pid );
+		event_buffer_write( $this->offer_event, $offer );
+	}
+
+	public function write_offer_success() {
+		event_buffer_disable( $this->offer_event, EV_WRITE );
+		event_buffer_watermark_set( $this->offer_event, EV_READ, 4, 4 );
+		event_buffer_set_callback( $this->offer_event,
+			array( $this, 'read_request_id' ),
+			null,
+			array( $this, 'read_request_id_error' ),
+			null
+		);
+		event_buffer_enable( $this->offer_event, EV_READ );
+	}
+
+	public function write_offer_error() {
+		error_log( "Worker $this->worker_pid reached write_offer_error" );
+		exit(0);
+	}
+
+	public function read_request_id() {
+		$message = event_buffer_read( $this->offer_event, 4 );
+		if ( $message === 'BYE!' )
+			$this->retire();
+		$this->request_id = current( unpack( 'N', $message ) );
+		event_buffer_watermark_set( $this->offer_event, EV_READ, 4, 4 );
+		event_buffer_set_callback( $this->offer_event,
+			array( $this, 'read_request_header' ),
+			null,
+			array( $this, 'read_request_header_error' ),
+			$length
+		);
+		event_buffer_enable( $this->offer_event, EV_READ );
+	}
+
+	public function read_request_id_error() {
+		error_log( "Worker $this->worker_pid reached read_request_id_error" );
+		exit(0);
+	}
+
+	public function read_request_header() {
+		$header = event_buffer_read( $this->offer_event, 4 );
+		$length = current( unpack( 'N', $header ) );
+		if ( $length > $this->max_message_length ) {
+			error_log( "Worker $this->worker_pid received request length $length, aborting" );
+			exit(0);
+		}
+		event_buffer_watermark_set( $this->offer_event, EV_READ, $length, $length );
+		event_buffer_set_callback( $this->offer_event,
+			array( $this, 'read_request' ),
+			null,
+			array( $this, 'read_request_error' ),
+			$length
+		);
+		event_buffer_enable( $this->offer_event, EV_READ );
+	}
+
+	public function read_request_header_error() {
+		error_log( "Worker $this->worker_pid reached read_request_header_error" );
+		exit(0);
+	}
+
+	public function read_request( $event, $length ) {
+		$request_message = event_buffer_read( $this->offer_event, $length );
+		event_buffer_disable( $this->offer_event, EV_READ | EV_WRITE );
+		event_buffer_free( $this->offer_event );
+		unset( $this->offer_event );
+		socket_shutdown( $this->offer_socket );
+		socket_close( $this->offer_socket );
+		unset( $this->offer_socket );
+		$this->become_intern( $request_message );
+	}
+
+	public function read_request_error() {
+		error_log( "Worker $this->worker_pid reached read_request_error" );
+		exit(0);
 	}
 
 	private function wait_for_resources( $interval = 10000 ) {
@@ -1028,22 +1135,6 @@ class Prefork_Worker extends Prefork_Service {
 		$cached = $matches[1];
 		$free_ram = $free + $buffers + $cached;
 		return ( $free_ram / $total > $this->min_free_ram );
-	}
-
-	private function receive_request() {
-		$socket = socket_create( AF_INET, SOCK_STREAM, 0 );
-		$message = pack( 'N', $this->worker_pid );
-		socket_connect( $socket, $this->offer_address, $this->offer_port );
-		socket_send( $socket, $message, 4, 0 );
-		socket_recv( $socket, $buffer, 4, MSG_WAITALL );
-		if ( ! $buffer || $buffer === 'BYE!' )
-			$this->retire();
-		$message = current( unpack( 'N', $buffer ) );
-		$this->request_id = $message;
-		$request_message = $this->read_message( $socket );
-		socket_shutdown( $socket );
-		socket_close( $socket );
-		return $request_message;
 	}
 
 	private function retire() {
