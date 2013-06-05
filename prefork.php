@@ -300,7 +300,7 @@ class Prefork_Service extends Prefork_Role {
 			$this->fail( 'Error: Prefork failed to bind service socket.' );
 		define( 'PREFORK_SERVICE', true );
 		if ( $this->daemonize ) {
-			if ( defined( STDIN ) ) {
+			if ( defined( 'STDIN' ) ) {
 				fclose( STDIN );
 				fclose( STDOUT );
 				fclose( STDERR );
