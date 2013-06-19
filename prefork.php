@@ -39,6 +39,11 @@ class Prefork {
 		if ( self::$service->worker )
 			self::$service->worker->fork();
 	}
+
+	public static function finish_request() {
+		if ( self::$service->worker->intern )
+			self::$service->worker->intern->finish_request();
+	}
 }
 
 /**
@@ -966,6 +971,7 @@ class Prefork_Worker extends Prefork_Service {
 	);
 
 	public $request_id;
+	public $intern;
 	private $intern_pid;
 
 	private function become_intern( $request_message ) {
@@ -982,6 +988,7 @@ class Prefork_Worker extends Prefork_Service {
 			}
 			event_base_free( $this->event_base );
 			$intern->start_request( $request_message );
+			$this->intern = $intern;
 			return true;
 		}
 		$this->intern_pid = $pid;
@@ -1190,5 +1197,10 @@ class Prefork_Intern extends Prefork_Worker {
 		);
 		$this->send_response_to_service( $response );
 		return '';
+	}
+
+	public function finish_request() {
+		// Trigger ob_handler() above
+		while ( @ob_end_flush() );
 	}
 }
