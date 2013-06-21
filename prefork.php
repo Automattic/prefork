@@ -1182,6 +1182,8 @@ class Prefork_Intern extends Prefork_Worker {
 		if ( isset( $request['SESSION'] ) ) $_SESSION = $request['SESSION'];
 		if ( isset( $request['ENV'] ) )     $_ENV     = $request['ENV'];
 		if ( isset( $request['HRPD'] ) )    $GLOBALS['HTTP_RAW_POST_DATA'] = $request['HRPD'];
+		if ( !empty( $_POST ) && empty( $HTTP_RAW_POST_DATA ) )
+			$GLOBALS['HTTP_RAW_POST_DATA'] = http_build_query( $_POST );
 		// Prepare to collect output
 		ob_start( array( $this, 'ob_handler' ) );
 		// Signal the app that we are starting a request
