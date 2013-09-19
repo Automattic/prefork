@@ -294,6 +294,8 @@ class Prefork_Service extends Prefork_Role {
 	private $responses_accepted = array();  // response_id => event buffer
 	private $responses_buffering = array(); // response_id => event buffer
 
+	private $method_calls = array(); // function => int
+
 	public $worker_pid;
 	public $worker;
 
@@ -385,6 +387,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function heartbeat() {
+		$this->log_method_call( __FUNCTION__ );
 		if ( is_callable( $this->heartbeat_callback ) )
 			call_user_func( $this->heartbeat_callback );
 		if ( $this->service_shutdown )
@@ -393,6 +396,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function accept_request() {
+		$this->log_method_call( __FUNCTION__ );
 		$start_time = microtime( true );
 		$socket = socket_accept( $this->request_socket );
 		$request_id = (string) intval( $socket );
@@ -413,6 +417,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function read_request_header_error( $request_event, $what, $request_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		$request_socket = $this->requests_sockets[ $request_id ];
 		event_buffer_disable( $request_event, EV_READ | EV_WRITE );
 		event_buffer_free( $request_event );
@@ -424,6 +429,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function read_request_header( $request_event, $request_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		$header = event_buffer_read( $request_event, 4 );
 		if ( $header === 'stat' ) {
 			unset( $this->requests_accepted[ $request_id ] );
@@ -443,6 +449,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function queue_request_error( $request_event, $what, $request_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		event_buffer_disable( $request_event, EV_READ | EV_WRITE );
 		event_buffer_free( $request_event );
 		$request_socket = $this->requests_sockets[ $request_id ];
@@ -454,6 +461,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function queue_request( $request_event, $request_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		event_buffer_disable( $request_event, EV_READ | EV_WRITE );
 		$this->requests_buffered[ $request_id ] = $request_event;
 		unset( $this->requests_accepted[ $request_id ] );
@@ -461,6 +469,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function accept_offer() {
+		$this->log_method_call( __FUNCTION__ );
 		$start_time = microtime( true );
 		$offer_socket = socket_accept( $this->offer_socket );
 		$offer_id = (string) intval( $offer_socket );
@@ -480,6 +489,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function read_offer_error( $offer_event, $what, $offer_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		$offer_socket = $this->offers_sockets[ $offer_id ];
 		event_buffer_disable( $offer_event, EV_READ | EV_WRITE );
 		event_buffer_free( $offer_event );
@@ -490,6 +500,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function read_offer( $offer_event, $offer_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		event_buffer_disable( $offer_event, EV_READ | EV_WRITE );
 		unset( $this->offers_accepted[ $offer_id ] );
 		$header = event_buffer_read( $offer_event, 4 );
@@ -538,6 +549,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function ready_worker_error( $event, $what, $worker_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		event_buffer_disable( $event, EV_READ | EV_WRITE );
 		event_buffer_free( $event );
 		$socket = $this->offers_sockets[ $offer_id ];
@@ -584,6 +596,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function write_request_error( $offer_event, $what, $offer_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		// error while sending a request to a worker
 		event_buffer_disable( $offer_event, EV_READ | EV_WRITE );
 		event_buffer_free( $offer_event );
@@ -601,6 +614,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function write_request_success( $offer_event, $offer_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		event_buffer_disable( $offer_event, EV_READ | EV_WRITE );
 		event_buffer_free( $offer_event );
 		$offer_socket = $this->offers_sockets[ $offer_id ];
@@ -619,6 +633,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function accept_response() {
+		$this->log_method_call( __FUNCTION__ );
 		$response_socket = socket_accept( $this->response_socket );
 		$response_id = (string) intval( $response_socket );
 		$this->responses_sockets[ $response_id ] = $response_socket;
@@ -637,6 +652,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function read_response_headers_error( $response_event, $what, $response_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		$this->close_response( $response_event, $response_id );
 	}
 
@@ -654,6 +670,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function read_response_headers( $response_event, $response_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		event_buffer_disable( $response_event, EV_READ | EV_WRITE );
 		$header = event_buffer_read( $response_event, 4 );
 		$request_id = current( unpack( 'N', $header ) );
@@ -676,6 +693,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function read_response_error( $response_event, $what, $response_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		$request_id = $this->responses_requests[ $response_id ];
 		$this->close_response( $response_event, $response_id );
 		$response = $this->create_error_response();
@@ -684,6 +702,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function read_response( $response_event, $response_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		$length = $this->responses_lengths[ $response_id ];
 		$response_message = event_buffer_read( $response_event, $length );
 		$request_id = $this->responses_requests[ $response_id ];
@@ -712,14 +731,17 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function return_response_error( $event, $what, $request_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		$this->close_request( $event, $request_id );
 	}
 
 	public function working_request_error( $event, $what, $request_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		$this->close_request( $event, $request_id );
 	}
 
 	public function close_request( $event, $request_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		event_buffer_disable( $event, EV_READ | EV_WRITE );
 		event_buffer_free( $event );
 		$request_socket = $this->requests_sockets[ $request_id ];
@@ -732,6 +754,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function SIGCHLD() {
+		$this->log_method_call( __FUNCTION__ );
 		// Reap zombies until none remain
 		while ( true ) {
 			$pid = pcntl_wait( $status, WNOHANG );
@@ -743,6 +766,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function SIGHUP() {
+		$this->log_method_call( __FUNCTION__ );
 		// Reload a limited list of options from ini file
 		$this->load_ini_file( $this->ini_options_HUP );
 		// Make old workers obsolete
@@ -755,6 +779,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function SIGINT() {
+		$this->log_method_call( __FUNCTION__ );
 		$this->received_SIGINT = true;
 		error_log( "Prefork caught SIGINT. Requests accepted: "
 			. count( $this->requests_accepted )
@@ -766,6 +791,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	public function SIGTERM() {
+		$this->log_method_call( __FUNCTION__ );
 		$this->received_SIGTERM = true;
 		error_log( "Prefork caught SIGTERM. Requests accepted: "
 			. count( $this->requests_accepted )
@@ -777,6 +803,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	private function retire_worker( $pid ) {
+		$this->log_method_call( __FUNCTION__ );
 		// Do we have a socket to the worker?
 		if ( isset( $this->workers_ready[ $pid ] ) ) {
 			$offer = $this->workers_ready[ $pid ];
@@ -789,6 +816,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	private function remove_worker( $pid ) {
+		$this->log_method_call( __FUNCTION__ );
 		if ( isset( $this->workers_ready[ $pid ] ) ) {
 			$offer_id = $this->workers_ready[ $pid ];
 			$socket = $this->offers_sockets[ $offer_id ];
@@ -805,6 +833,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	private function supervise_workers() {
+		$this->log_method_call( __FUNCTION__ );
 		// Spawn workers to fill empty slots
 		while ( count( $this->workers_alive ) < $this->max_workers ) {
 			if ( $this->become_worker() )
@@ -813,6 +842,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	private function become_worker() {
+		$this->log_method_call( __FUNCTION__ );
 		$pid = $this->fork_process();
 		if ( $pid === 0 ) {
 			$this->worker_pid = posix_getpid();
@@ -855,6 +885,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	private function begin_shutdown() {
+		$this->log_method_call( __FUNCTION__ );
 		error_log( "Prefork service shutdown intiated" );
 		// Stop listening for events on the request port
 		event_del( $this->events['request'] );
@@ -864,6 +895,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	private function continue_shutdown() {
+		$this->log_method_call( __FUNCTION__ );
 		// Delay shutdown until all accepted requests are completed
 		if ( $this->requests_started )
 			return;
@@ -888,6 +920,7 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	private function respond_to_status_request( $request_event, $request_id ) {
+		$this->log_method_call( __FUNCTION__ );
 		$response = $this->create_status_response();
 		$response_message = serialize( $response );
 		$this->return_response( $request_id, $response_message );
@@ -896,13 +929,16 @@ class Prefork_Service extends Prefork_Role {
 	private function create_status_response() {
 		$report = '';
 		foreach ( get_class_vars( __CLASS__ ) as $var => $default ) {
-			if ( $default === array() ) {
+			if ( $default === array() && $var != 'method_calls' ) {
 				$count = count( $this->{$var} );
 				// Scrub the current status request from the counts
 				if ( $var == 'requests_started' || $var == 'requests_sockets' || $var == 'requests_working' )
 					--$count;
 				$report .= "$var: $count" . PHP_EOL;
 			}
+		}
+		foreach ( $this->method_calls as $method => $calls ) {
+			$report .= __CLASS__ . "::$method(): $calls" . PHP_EOL;
 		}
 		return array(
 			'code' => 200,
@@ -954,6 +990,12 @@ class Prefork_Service extends Prefork_Role {
 		list( $key, $value ) = each( $array );
 		unset( $array[ $key ] );
 		return array( $key, $value );
+	}
+
+	private function log_method_call( $function ) {
+		if ( ! isset( $this->method_calls[ $function ] ) )
+			$this->method_calls[ $function ] = 0;
+		++$this->method_calls[ $function ];
 	}
 }
 
