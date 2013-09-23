@@ -577,6 +577,11 @@ class Prefork_Service extends Prefork_Role {
 		$request_length = $this->requests_lengths[ $request_id ];
 		unset( $this->requests_lengths[ $request_id ] );
 		$request_message = event_buffer_read( $request_event, $request_length );
+		if ( strlen( $request_message ) != $request_length ) {
+			error_log( "Service detected malformed request" );
+			$this->close_request( $request_event, $request_id );
+			return;
+		}
 		// Write request to ready worker
 		list( $worker_pid, $offer_id ) = $this->take_first( $this->workers_ready );
 		$offer_event = $this->offers_waiting[ $offer_id ];
