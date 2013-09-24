@@ -53,6 +53,7 @@ class Prefork_Role {
 	protected $ini_file;
 
 	public $max_message_length = 16777216; // 16MB
+	public $gateway_timeout = 120; // seconds
 
 	// Sockets config -- use different ports if you run multiple services
 	public $request_address = "127.0.0.1";
@@ -143,6 +144,7 @@ class Prefork_Agent extends Prefork_Role {
 	protected $ini_options = array(
 		'request_address',
 		'request_port',
+		'gateway_timeout',
 	);
 
 	public function start() {
@@ -173,7 +175,7 @@ class Prefork_Agent extends Prefork_Role {
 	private function transact_with_service( $request ) {
 		$socket = socket_create( AF_INET, SOCK_STREAM, 0 );
 		socket_set_option( $socket, SOL_SOCKET, SO_SNDTIMEO, array( 'sec' => 0, 'usec' => 10000 ) );
-		socket_set_option( $socket, SOL_SOCKET, SO_RCVTIMEO, array( 'sec' => 30, 'usec' => 0 ) );
+		socket_set_option( $socket, SOL_SOCKET, SO_RCVTIMEO, array( 'sec' => $this->gateway_timeout, 'usec' => 0 ) );
 		$connected = @socket_connect( $socket, $this->request_address, $this->request_port );
 		if ( ! $connected )
 			return false;
@@ -252,6 +254,7 @@ class Prefork_Service extends Prefork_Role {
 		'request_address', 'request_port', 'request_backlog',
 		'offer_address', 'offer_port', 'offer_backlog',
 		'response_address', 'response_port', 'response_backlog',
+		'gateway_timeout',
 	);
 	// Options which are reloaded on SIGHUP
 	private $ini_options_HUP = array(
@@ -393,6 +396,7 @@ class Prefork_Service extends Prefork_Role {
 		if ( $this->service_shutdown )
 			$this->continue_shutdown();
 		$this->supervise_workers();
+		$this->supervise_requests();
 	}
 
 	public function accept_request() {
@@ -402,6 +406,7 @@ class Prefork_Service extends Prefork_Role {
 		$request_id = (string) intval( $socket );
 		$this->requests_sockets[ $request_id ] = $socket;
 		$this->requests_started[ $request_id ] = $start_time;
+		asort( $this->requests_started );
 		// Buffer the 4-byte header
 		$event = event_buffer_new( $socket,
 			array( $this, 'read_request_header' ),
@@ -838,11 +843,25 @@ class Prefork_Service extends Prefork_Role {
 	}
 
 	private function supervise_workers() {
-		$this->log_method_call( __FUNCTION__ );
 		// Spawn workers to fill empty slots
 		while ( count( $this->workers_alive ) < $this->max_workers ) {
 			if ( $this->become_worker() )
 				break;
+		}
+	}
+
+	private function supervise_requests() {
+		if ( empty( $this->requests_started ) )
+			return;
+		// Close any requests that have timed out
+		reset( $this->requests_started );
+		list( $request_id, $time ) = each( $this->requests_started );
+		$timeout = $time + $this->gateway_timeout;
+		if ( $timeout < microtime( true ) ) {
+			$this->log_method_call( __FUNCTION__ );
+			$request_event = $this->requests_working[$request_id];
+			$this->close_request( $request_event, $request_id );
+			$this->supervise_requests();
 		}
 	}
 
