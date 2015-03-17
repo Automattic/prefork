@@ -50,7 +50,7 @@ can access any headers set by the app.)
     // This script is the daemon
     require 'prefork.php';
     Prefork::use_ini_file( 'prefork.ini' );
-    Prefork::become_service();
+    Prefork::start_service();
     // Workers reach this code
     require 'my-prefork-app-loader.php';
     Prefork::fork();
