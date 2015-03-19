@@ -1140,8 +1140,7 @@ class Prefork_Worker extends Prefork_Service {
 		event_buffer_set_callback( $this->offer_event,
 			array( $this, 'read_request_header' ),
 			null,
-			array( $this, 'read_request_header_error' ),
-			$length
+			array( $this, 'read_request_header_error' )
 		);
 		event_buffer_enable( $this->offer_event, EV_READ );
 	}
