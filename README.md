@@ -101,7 +101,7 @@ Superglobal request variables (`$_GET`, `$_POST`, `$_COOKIE`,
 `$_SERVER`, etc.) are not ready until after `Prefork::fork()`. You
 MUST NOT access them earlier.
 
-Certian resource types are reused by each of one worker's interns in
+Certain resource types are reused by each of one worker's interns in
 turn. By way of example, MySQL and Memcache connections are typically
 reused, but with no concurrency due to the limit of one intern per
 worker. Thus if you use any persistent resources like these, you
