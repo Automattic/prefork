@@ -1,3 +1,5 @@
+#### As of Jan 1, 2017 prefork is not used at Automattic and therefore this code is no longer actively maintained. The performance improvements in PHP7 were enough to justify deprecating the use of prefork to improve code and operational simplicity. In our environment, PHP7 without prefork is about 20% faster than PHP5.6 with prefork and uses 60%+ less CPU.
+
 # prefork
 
 PHP class for pre-loading heavy PHP apps before serving requests.
